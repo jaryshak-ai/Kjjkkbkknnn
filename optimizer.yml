@@ -1,0 +1,1129 @@
+name: Build Optimizer
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Create project files
+        run: |
+          mkdir -p Optimizer/src/main/java/ru/eclips/optimizer
+          mkdir -p Optimizer/src/main/resources
+
+          cat > Optimizer/pom.xml << 'POMEOF'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <project xmlns="http://maven.apache.org/POM/4.0.0"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                   xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+            <modelVersion>4.0.0</modelVersion>
+            <groupId>ru.eclips</groupId>
+            <artifactId>Optimizer</artifactId>
+            <version>1.0.0</version>
+            <packaging>jar</packaging>
+
+            <properties>
+              <maven.compiler.source>17</maven.compiler.source>
+              <maven.compiler.target>17</maven.compiler.target>
+              <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+            </properties>
+
+            <repositories>
+              <repository>
+                <id>lanink</id>
+                <url>https://repo.lanink.cn/repository/maven-public/</url>
+              </repository>
+            </repositories>
+
+            <dependencies>
+              <dependency>
+                <groupId>cn.nukkit</groupId>
+                <artifactId>Nukkit</artifactId>
+                <version>MOT-SNAPSHOT</version>
+                <scope>provided</scope>
+              </dependency>
+            </dependencies>
+
+            <build>
+              <finalName>Optimizer</finalName>
+              <plugins>
+                <plugin>
+                  <groupId>org.apache.maven.plugins</groupId>
+                  <artifactId>maven-compiler-plugin</artifactId>
+                  <version>3.11.0</version>
+                  <configuration>
+                    <source>17</source>
+                    <target>17</target>
+                    <encoding>UTF-8</encoding>
+                  </configuration>
+                </plugin>
+              </plugins>
+            </build>
+          </project>
+          POMEOF
+
+          cat > Optimizer/src/main/resources/plugin.yml << 'PLUGINEOF'
+          name: Optimizer
+          main: ru.eclips.optimizer.Optimizer
+          version: 1.0.0
+          api: ["1.0.0"]
+          author: Eclips
+          description: Оптимизация сервера - снижение расхода RAM
+          commands:
+            aop:
+              description: Меню оптимизации сервера (админ)
+              usage: /aop
+              permission: optimizer.aop
+            perf:
+              description: Нагрузка сервера в чате (админ)
+              usage: /perf
+              permission: optimizer.perf
+          permissions:
+            optimizer.aop:
+              description: Доступ к меню /aop
+              default: op
+            optimizer.perf:
+              description: Доступ к команде /perf
+              default: op
+          PLUGINEOF
+
+          cat > Optimizer/src/main/resources/config.yml << 'CFGEOF'
+          # ============================================================
+          # Optimizer - настройки оптимизации сервера
+          # После правки перезапусти сервер или выполни /aop reload
+          # ============================================================
+
+          # Писать подробности и ошибки в консоль (для отладки)
+          debug: false
+
+          # Миры (имя папки мира), которые оптимизатор не трогает. Пример: ["world2", "hub"]
+          exclude-worlds: []
+
+          # --- Лимит дальности прорисовки ---
+          view-distance:
+            # Включить ограничение
+            enabled: true
+            # Максимум чанков вокруг игрока. Если у игрока в настройках больше - урежется
+            limit: 7
+
+          # --- Очистка предметов на земле ---
+          items:
+            # Включить автоматическую очистку
+            enabled: true
+            # Как часто чистить, в секундах (300 = 5 минут)
+            interval-seconds: 300
+            # За сколько секунд до очистки писать предупреждение в чат
+            # Пустой список [] отключает предупреждения
+            warn-seconds: [30, 10]
+            # Сообщать в чат, сколько предметов удалено
+            broadcast-done: true
+            # Тексты. {sec} - секунды до очистки, {count} - сколько удалено
+            message-warn: "§6[Очистка] Через {sec} сек. будут удалены все предметы на земле! Подберите свои вещи."
+            message-done: "§2[Очистка] Удалено предметов с земли: {count}."
+
+          # --- Лимит мобов на чанк ---
+          mobs:
+            enabled: true
+            # Как часто проверять, в секундах
+            interval-seconds: 30
+            # Максимум мобов в одном чанке, лишние удаляются
+            # Мобы с именем, питомцы с хозяином, NPC, боссы не удаляются
+            limit-per-chunk: 100
+
+          # --- Выгрузка неиспользуемых чанков ---
+          chunks:
+            enabled: true
+            # Как часто выгружать, в секундах
+            interval-seconds: 60
+            # Минимальный радиус (в чанках) вокруг игрока, который не выгружается
+            # Если у игрока дальность прорисовки больше, берётся она + 1
+            keep-radius: 6
+            # Радиус (в чанках) вокруг спавна мира, который не выгружается
+            spawn-keep-radius: 2
+            # Максимум чанков за один запуск (чтобы не было лагов)
+            max-per-run: 300
+
+          # --- Сборка мусора Java (GC) ---
+          gc:
+            enabled: true
+            # Запускать, когда занято не меньше этого процента памяти Java
+            # 85 = свободно меньше 15%
+            used-percent: 85
+            # Не чаще чем раз в столько секунд
+            cooldown-seconds: 120
+            # Как часто проверять память, в секундах
+            check-interval-seconds: 10
+          CFGEOF
+
+          cat > Optimizer/src/main/java/ru/eclips/optimizer/Optimizer.java << 'JAVAEOF'
+          package ru.eclips.optimizer;
+
+          import cn.nukkit.Player;
+          import cn.nukkit.command.Command;
+          import cn.nukkit.command.CommandSender;
+          import cn.nukkit.entity.Entity;
+          import cn.nukkit.event.EventHandler;
+          import cn.nukkit.event.Listener;
+          import cn.nukkit.event.player.PlayerFormRespondedEvent;
+          import cn.nukkit.event.player.PlayerJoinEvent;
+          import cn.nukkit.event.player.PlayerQuitEvent;
+          import cn.nukkit.form.element.ElementButton;
+          import cn.nukkit.form.response.FormResponseSimple;
+          import cn.nukkit.form.window.FormWindow;
+          import cn.nukkit.form.window.FormWindowSimple;
+          import cn.nukkit.level.Level;
+          import cn.nukkit.math.Vector3;
+          import cn.nukkit.plugin.PluginBase;
+          import cn.nukkit.scheduler.Task;
+          import cn.nukkit.utils.Config;
+
+          import java.io.File;
+          import java.nio.charset.StandardCharsets;
+          import java.nio.file.Files;
+          import java.nio.file.StandardCopyOption;
+          import java.util.ArrayList;
+          import java.util.Collection;
+          import java.util.HashMap;
+          import java.util.HashSet;
+          import java.util.Iterator;
+          import java.util.List;
+          import java.util.Locale;
+          import java.util.Map;
+          import java.util.Set;
+          import java.util.UUID;
+          import java.util.concurrent.ConcurrentHashMap;
+          import java.util.concurrent.ExecutorService;
+          import java.util.concurrent.Executors;
+          import java.util.concurrent.TimeUnit;
+
+          public class Optimizer extends PluginBase implements Listener {
+
+              private static final long MB = 1024L * 1024L;
+
+              private final Stats stats = new Stats();
+              private final Map<UUID, FormWindow> openForms = new ConcurrentHashMap<>();
+              private final Map<Class<?>, Integer> classCache = new ConcurrentHashMap<>();
+              private final Object fileLock = new Object();
+              private ExecutorService io;
+              private File statsFile;
+
+              // ---- настройки ----
+              private boolean debug;
+              private boolean itemsEnabled;
+              private int itemInterval;
+              private List<Integer> warnSeconds = new ArrayList<>();
+              private boolean broadcastDone;
+              private String msgWarn;
+              private String msgDone;
+              private boolean mobsEnabled;
+              private int mobInterval;
+              private int mobLimit;
+              private boolean chunksEnabled;
+              private int chunkInterval;
+              private int keepRadius;
+              private int spawnKeep;
+              private int chunkMax;
+              private boolean gcEnabled;
+              private int gcPercent;
+              private int gcCooldown;
+              private int gcCheck;
+              private final Set<String> excluded = new HashSet<>();
+              private boolean viewEnabled;
+              private int viewLimit = 7;
+              private int viewCounter = 0;
+
+              // ---- счётчики (в секундах) ----
+              private int itemCountdown;
+              private int mobCounter;
+              private int chunkCounter;
+              private int gcCounter;
+              private long lastGc = 0L;
+              private volatile boolean gcRunning = false;
+
+              @Override
+              public void onEnable() {
+                  try {
+                      saveDefaultConfig();
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+                  getDataFolder().mkdirs();
+                  statsFile = new File(getDataFolder(), "stats.txt");
+                  io = Executors.newSingleThreadExecutor(r -> {
+                      Thread th = new Thread(r, "Optimizer-IO");
+                      th.setDaemon(true);
+                      return th;
+                  });
+                  loadStats();
+                  loadSettings();
+                  getServer().getPluginManager().registerEvents(this, this);
+                  getServer().getScheduler().scheduleRepeatingTask(this, new Task() {
+                      @Override
+                      public void onRun(int currentTick) {
+                          Optimizer.this.secondTick();
+                      }
+                  }, 20);
+                  getLogger().info("Optimizer включён");
+              }
+
+              @Override
+              public void onDisable() {
+                  try {
+                      if (io != null) {
+                          io.shutdown();
+                          try {
+                              io.awaitTermination(3, TimeUnit.SECONDS);
+                          } catch (InterruptedException ignored) {
+                          }
+                      }
+                      writeStats(stats.serialize());
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+                  openForms.clear();
+              }
+
+              private void dbg(Throwable t) {
+                  try {
+                      if (debug) {
+                          getLogger().warning("Optimizer: " + t);
+                      }
+                  } catch (Throwable ignored) {
+                  }
+              }
+
+              // ================= НАСТРОЙКИ =================
+
+              private void loadSettings() {
+                  Config c = getConfig();
+                  debug = c.getBoolean("debug", false);
+
+                  itemsEnabled = c.getBoolean("items.enabled", true);
+                  itemInterval = Math.max(15, c.getInt("items.interval-seconds", 300));
+                  warnSeconds = new ArrayList<>();
+                  if (c.exists("items.warn-seconds")) {
+                      List<Integer> raw = c.getIntegerList("items.warn-seconds");
+                      if (raw != null) {
+                          for (Integer v : raw) {
+                              if (v != null && v > 0 && v < itemInterval) {
+                                  warnSeconds.add(v);
+                              }
+                          }
+                      }
+                  } else {
+                      warnSeconds.add(30);
+                  }
+                  broadcastDone = c.getBoolean("items.broadcast-done", true);
+                  msgWarn = c.getString("items.message-warn",
+                          "§6[Очистка] Через {sec} сек. будут удалены все предметы на земле! Подберите свои вещи.");
+                  msgDone = c.getString("items.message-done", "§2[Очистка] Удалено предметов с земли: {count}.");
+
+                  mobsEnabled = c.getBoolean("mobs.enabled", true);
+                  mobInterval = Math.max(5, c.getInt("mobs.interval-seconds", 30));
+                  mobLimit = Math.max(1, c.getInt("mobs.limit-per-chunk", 100));
+
+                  chunksEnabled = c.getBoolean("chunks.enabled", true);
+                  chunkInterval = Math.max(10, c.getInt("chunks.interval-seconds", 60));
+                  keepRadius = Math.max(2, c.getInt("chunks.keep-radius", 6));
+                  spawnKeep = Math.max(0, c.getInt("chunks.spawn-keep-radius", 2));
+                  chunkMax = Math.max(10, c.getInt("chunks.max-per-run", 300));
+
+                  gcEnabled = c.getBoolean("gc.enabled", true);
+                  gcPercent = Math.min(99, Math.max(30, c.getInt("gc.used-percent", 85)));
+                  gcCooldown = Math.max(10, c.getInt("gc.cooldown-seconds", 120));
+                  gcCheck = Math.max(2, c.getInt("gc.check-interval-seconds", 10));
+
+                  viewEnabled = c.getBoolean("view-distance.enabled", true);
+                  viewLimit = Math.min(32, Math.max(2, c.getInt("view-distance.limit", 7)));
+
+                  excluded.clear();
+                  List<String> ex = c.getStringList("exclude-worlds");
+                  if (ex != null) {
+                      for (String s : ex) {
+                          if (s != null) {
+                              excluded.add(s.toLowerCase());
+                          }
+                      }
+                  }
+
+                  itemCountdown = itemInterval;
+                  mobCounter = 0;
+                  chunkCounter = 0;
+                  gcCounter = 0;
+              }
+
+              private boolean isExcluded(Level lv) {
+                  try {
+                      String f = lv.getFolderName();
+                      return f != null && excluded.contains(f.toLowerCase());
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              // ================= ГЛАВНЫЙ ТАЙМЕР (раз в секунду) =================
+
+              private void secondTick() {
+                  if (viewEnabled) {
+                      try {
+                          viewCounter++;
+                          if (viewCounter >= 30) {
+                              viewCounter = 0;
+                              applyViewToAll();
+                          }
+                      } catch (Throwable t) {
+                          dbg(t);
+                      }
+                  }
+                  if (itemsEnabled) {
+                      try {
+                          itemStep();
+                      } catch (Throwable t) {
+                          dbg(t);
+                      }
+                  }
+                  if (mobsEnabled) {
+                      try {
+                          mobCounter++;
+                          if (mobCounter >= mobInterval) {
+                              mobCounter = 0;
+                              int n = cullMobs();
+                              if (n > 0) {
+                                  addStat(0, n, 0);
+                              }
+                          }
+                      } catch (Throwable t) {
+                          dbg(t);
+                      }
+                  }
+                  if (chunksEnabled) {
+                      try {
+                          chunkCounter++;
+                          if (chunkCounter >= chunkInterval) {
+                              chunkCounter = 0;
+                              int n = unloadChunks();
+                              if (n > 0) {
+                                  addStat(0, 0, n);
+                              }
+                          }
+                      } catch (Throwable t) {
+                          dbg(t);
+                      }
+                  }
+                  if (gcEnabled) {
+                      try {
+                          gcStep();
+                      } catch (Throwable t) {
+                          dbg(t);
+                      }
+                  }
+              }
+
+              private void itemStep() {
+                  itemCountdown--;
+                  boolean anyone = !getServer().getOnlinePlayers().isEmpty();
+                  if (itemCountdown > 0) {
+                      if (anyone && warnSeconds.contains(itemCountdown)) {
+                          getServer().broadcastMessage(msgWarn.replace("{sec}", String.valueOf(itemCountdown)));
+                      }
+                      return;
+                  }
+                  itemCountdown = itemInterval;
+                  int n = clearItems();
+                  if (n > 0) {
+                      addStat(n, 0, 0);
+                      if (broadcastDone && anyone) {
+                          getServer().broadcastMessage(msgDone.replace("{count}", String.valueOf(n)));
+                      }
+                  }
+              }
+
+              private void gcStep() {
+                  gcCounter++;
+                  if (gcCounter < gcCheck) {
+                      return;
+                  }
+                  gcCounter = 0;
+                  long now = System.currentTimeMillis();
+                  if (gcRunning || now - lastGc < gcCooldown * 1000L) {
+                      return;
+                  }
+                  Runtime rt = Runtime.getRuntime();
+                  long used = rt.totalMemory() - rt.freeMemory();
+                  int pct = (int) (used * 100L / Math.max(1L, rt.maxMemory()));
+                  if (pct < gcPercent) {
+                      return;
+                  }
+                  lastGc = now;
+                  gcRunning = true;
+                  try {
+                      io.submit(() -> {
+                          try {
+                              System.gc();
+                          } catch (Throwable ignored) {
+                          } finally {
+                              gcRunning = false;
+                          }
+                      });
+                  } catch (Throwable t) {
+                      gcRunning = false;
+                      dbg(t);
+                  }
+              }
+
+              // ================= ОЧИСТКА =================
+
+              private List<Level> levels() {
+                  return new ArrayList<>(getServer().getLevels().values());
+              }
+
+              private List<Entity> entitiesOf(Level lv) {
+                  List<Entity> r = new ArrayList<>();
+                  try {
+                      Object o = lv.getEntities();
+                      if (o instanceof Entity[]) {
+                          for (Entity e : (Entity[]) o) {
+                              if (e != null) {
+                                  r.add(e);
+                              }
+                          }
+                      } else if (o instanceof Collection) {
+                          for (Object x : (Collection<?>) o) {
+                              if (x instanceof Entity) {
+                                  r.add((Entity) x);
+                              }
+                          }
+                      }
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+                  return r;
+              }
+
+              /** 0 - прочее, 1 - предмет на земле, 2 - моб (можно удалять), 3 - защищённое существо или игрок */
+              private int classify(Entity e) {
+                  if (e instanceof Player) {
+                      return 3;
+                  }
+                  Class<?> c = e.getClass();
+                  Integer cached = classCache.get(c);
+                  if (cached != null) {
+                      return cached;
+                  }
+                  boolean item = false;
+                  boolean living = false;
+                  boolean human = false;
+                  for (Class<?> k = c; k != null; k = k.getSuperclass()) {
+                      String n = k.getName();
+                      if (n.equals("cn.nukkit.entity.item.EntityItem")) {
+                          item = true;
+                      }
+                      if (n.equals("cn.nukkit.entity.EntityLiving")) {
+                          living = true;
+                      }
+                      if (n.equals("cn.nukkit.entity.EntityHuman")) {
+                          human = true;
+                      }
+                  }
+                  int r = 0;
+                  if (item) {
+                      r = 1;
+                  } else if (living) {
+                      String s = c.getSimpleName().toLowerCase();
+                      if (human || s.contains("armorstand") || s.contains("npc") || s.contains("dragon")
+                              || s.contains("wither") || s.contains("warden") || s.contains("painting")) {
+                          r = 3;
+                      } else {
+                          r = 2;
+                      }
+                  }
+                  classCache.put(c, r);
+                  return r;
+              }
+
+              private boolean hasOwner(Entity e) {
+                  try {
+                      return e.namedTag != null && (e.namedTag.contains("OwnerUUID")
+                              || e.namedTag.contains("Owner") || e.namedTag.contains("OwnerNew"));
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              private int clearItems() {
+                  int n = 0;
+                  for (Level lv : levels()) {
+                      if (isExcluded(lv)) {
+                          continue;
+                      }
+                      for (Entity e : entitiesOf(lv)) {
+                          try {
+                              if (classify(e) == 1) {
+                                  e.close();
+                                  n++;
+                              }
+                          } catch (Throwable t) {
+                              dbg(t);
+                          }
+                      }
+                  }
+                  return n;
+              }
+
+              private int cullMobs() {
+                  int removed = 0;
+                  for (Level lv : levels()) {
+                      if (isExcluded(lv)) {
+                          continue;
+                      }
+                      Map<Long, List<Entity>> byChunk = new HashMap<>();
+                      for (Entity e : entitiesOf(lv)) {
+                          try {
+                              if (classify(e) != 2) {
+                                  continue;
+                              }
+                              String nt = e.getNameTag();
+                              if (nt != null && !nt.isEmpty()) {
+                                  continue;
+                              }
+                              if (hasOwner(e)) {
+                                  continue;
+                              }
+                              long key = (((long) (e.getFloorX() >> 4)) << 32) | ((e.getFloorZ() >> 4) & 0xffffffffL);
+                              List<Entity> l = byChunk.get(key);
+                              if (l == null) {
+                                  l = new ArrayList<>();
+                                  byChunk.put(key, l);
+                              }
+                              l.add(e);
+                          } catch (Throwable t) {
+                              dbg(t);
+                          }
+                      }
+                      for (List<Entity> l : byChunk.values()) {
+                          if (l.size() <= mobLimit) {
+                              continue;
+                          }
+                          for (int i = mobLimit; i < l.size(); i++) {
+                              try {
+                                  l.get(i).close();
+                                  removed++;
+                              } catch (Throwable t) {
+                                  dbg(t);
+                              }
+                          }
+                      }
+                  }
+                  return removed;
+              }
+
+              private int unloadChunks() {
+                  int total = 0;
+                  for (Level lv : levels()) {
+                      if (total >= chunkMax) {
+                          break;
+                      }
+                      if (isExcluded(lv)) {
+                          continue;
+                      }
+                      try {
+                          total += unloadInLevel(lv, chunkMax - total);
+                      } catch (Throwable t) {
+                          dbg(t);
+                      }
+                  }
+                  return total;
+              }
+
+              private static int viewDist(Player p, int def) {
+                  try {
+                      Object o = p.getClass().getMethod("getViewDistance").invoke(p);
+                      if (o instanceof Number) {
+                          return ((Number) o).intValue();
+                      }
+                  } catch (Throwable ignored) {
+                  }
+                  return def;
+              }
+
+              private int unloadInLevel(Level lv, int budget) {
+                  Object cm = lv.getChunks();
+                  if (!(cm instanceof Map)) {
+                      return 0;
+                  }
+                  List<Long> keys = new ArrayList<>();
+                  for (Object k : new ArrayList<Object>(((Map<?, ?>) cm).keySet())) {
+                      if (k instanceof Number) {
+                          keys.add(((Number) k).longValue());
+                      }
+                  }
+                  if (keys.isEmpty()) {
+                      return 0;
+                  }
+
+                  List<int[]> guards = new ArrayList<>();
+                  Object po = lv.getPlayers();
+                  if (po instanceof Map) {
+                      for (Object o : ((Map<?, ?>) po).values()) {
+                          if (o instanceof Player) {
+                              Player p = (Player) o;
+                              int r = Math.min(40, Math.max(keepRadius, viewDist(p, keepRadius) + 1));
+                              guards.add(new int[]{p.getFloorX() >> 4, p.getFloorZ() >> 4, r});
+                          }
+                      }
+                  }
+
+                  int sx = 0;
+                  int sz = 0;
+                  boolean hasSpawn = false;
+                  try {
+                      Vector3 sp = lv.getSpawnLocation();
+                      if (sp != null) {
+                          sx = sp.getFloorX() >> 4;
+                          sz = sp.getFloorZ() >> 4;
+                          hasSpawn = true;
+                      }
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+
+                  int done = 0;
+                  for (long h : keys) {
+                      if (done >= budget) {
+                          break;
+                      }
+                      int cx = (int) (h >> 32);
+                      int cz = (int) h;
+                      boolean keep = false;
+                      for (int[] g : guards) {
+                          if (Math.abs(cx - g[0]) <= g[2] && Math.abs(cz - g[1]) <= g[2]) {
+                              keep = true;
+                              break;
+                          }
+                      }
+                      if (!keep && hasSpawn && Math.abs(cx - sx) <= spawnKeep && Math.abs(cz - sz) <= spawnKeep) {
+                          keep = true;
+                      }
+                      if (keep) {
+                          continue;
+                      }
+                      try {
+                          if (lv.unloadChunk(cx, cz, true)) {
+                              done++;
+                          }
+                      } catch (Throwable t) {
+                          dbg(t);
+                      }
+                  }
+                  return done;
+              }
+
+              // ================= СТАТИСТИКА =================
+
+              private void addStat(long items, long mobs, long chunks) {
+                  stats.add(items, mobs, chunks);
+                  saveStatsAsync();
+              }
+
+              private void loadStats() {
+                  try {
+                      if (statsFile.exists()) {
+                          stats.load(Files.readAllLines(statsFile.toPath(), StandardCharsets.UTF_8));
+                      }
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+              }
+
+              private void saveStatsAsync() {
+                  final String data = stats.serialize();
+                  try {
+                      io.submit(() -> writeStats(data));
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+              }
+
+              private void writeStats(String data) {
+                  synchronized (fileLock) {
+                      try {
+                          File tmp = new File(statsFile.getPath() + ".tmp");
+                          Files.write(tmp.toPath(), data.getBytes(StandardCharsets.UTF_8));
+                          try {
+                              Files.move(tmp.toPath(), statsFile.toPath(),
+                                      StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
+                          } catch (Throwable t) {
+                              Files.move(tmp.toPath(), statsFile.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                          }
+                      } catch (Throwable t) {
+                          dbg(t);
+                      }
+                  }
+              }
+
+              private static class Stats {
+                  private final List<long[]> rec = new ArrayList<>();
+
+                  synchronized void add(long items, long mobs, long chunks) {
+                      if (items + mobs + chunks <= 0) {
+                          return;
+                      }
+                      rec.add(new long[]{System.currentTimeMillis(), items, mobs, chunks});
+                      prune();
+                  }
+
+                  private void prune() {
+                      long cut = System.currentTimeMillis() - 25L * 3600000L;
+                      Iterator<long[]> it = rec.iterator();
+                      while (it.hasNext()) {
+                          if (it.next()[0] < cut) {
+                              it.remove();
+                          } else {
+                              break;
+                          }
+                      }
+                  }
+
+                  synchronized long[] sum(long periodMs) {
+                      long since = System.currentTimeMillis() - periodMs;
+                      long i = 0;
+                      long m = 0;
+                      long c = 0;
+                      for (long[] r : rec) {
+                          if (r[0] >= since) {
+                              i += r[1];
+                              m += r[2];
+                              c += r[3];
+                          }
+                      }
+                      return new long[]{i, m, c};
+                  }
+
+                  synchronized String serialize() {
+                      prune();
+                      StringBuilder sb = new StringBuilder();
+                      for (long[] r : rec) {
+                          sb.append(r[0]).append(';').append(r[1]).append(';')
+                                  .append(r[2]).append(';').append(r[3]).append('\n');
+                      }
+                      return sb.toString();
+                  }
+
+                  synchronized void load(List<String> lines) {
+                      for (String line : lines) {
+                          try {
+                              String[] p = line.trim().split(";");
+                              if (p.length != 4) {
+                                  continue;
+                              }
+                              rec.add(new long[]{Long.parseLong(p[0]), Long.parseLong(p[1]),
+                                      Long.parseLong(p[2]), Long.parseLong(p[3])});
+                          } catch (Throwable ignored) {
+                          }
+                      }
+                      rec.sort((a, b) -> Long.compare(a[0], b[0]));
+                      prune();
+                  }
+              }
+
+              // ================= ОТЧЁТ =================
+
+              private static String col(int pct) {
+                  if (pct < 70) {
+                      return "§2";
+                  }
+                  if (pct < 85) {
+                      return "§6";
+                  }
+                  return "§c";
+              }
+
+              private static Double number(Object o, String method) {
+                  try {
+                      Object r = o.getClass().getMethod(method).invoke(o);
+                      if (r instanceof Number) {
+                          return ((Number) r).doubleValue();
+                      }
+                  } catch (Throwable ignored) {
+                  }
+                  return null;
+              }
+
+              private static long readLongFile(String path) {
+                  try {
+                      String s = new String(Files.readAllBytes(new File(path).toPath()), StandardCharsets.UTF_8).trim();
+                      if (s.isEmpty() || s.equals("max")) {
+                          return -1L;
+                      }
+                      return Long.parseLong(s);
+                  } catch (Throwable t) {
+                      return -1L;
+                  }
+              }
+
+              private static long containerLimit() {
+                  long lim = readLongFile("/sys/fs/cgroup/memory.max");
+                  if (lim <= 0) {
+                      lim = readLongFile("/sys/fs/cgroup/memory/memory.limit_in_bytes");
+                  }
+                  if (lim <= 0 || lim > (1L << 40)) {
+                      return -1L;
+                  }
+                  return lim;
+              }
+
+              private static long readRss() {
+                  try {
+                      List<String> lines = Files.readAllLines(new File("/proc/self/status").toPath(), StandardCharsets.UTF_8);
+                      for (String l : lines) {
+                          if (l.startsWith("VmRSS:")) {
+                              String[] p = l.trim().split("\\s+");
+                              if (p.length >= 2) {
+                                  return Long.parseLong(p[1]) * 1024L;
+                              }
+                          }
+                      }
+                  } catch (Throwable ignored) {
+                  }
+                  return -1L;
+              }
+
+              private String report() {
+                  StringBuilder sb = new StringBuilder();
+                  Runtime rt = Runtime.getRuntime();
+                  long max = rt.maxMemory();
+                  long used = rt.totalMemory() - rt.freeMemory();
+                  int pct = (int) (used * 100L / Math.max(1L, max));
+
+                  sb.append("§lНагрузка сервера§r\n");
+                  sb.append("RAM Java: ").append(col(pct)).append(used / MB).append("§r / ")
+                          .append(max / MB).append(" МБ (").append(col(pct)).append(pct).append("%§r)\n");
+
+                  long rss = readRss();
+                  long lim = containerLimit();
+                  if (rss > 0) {
+                      if (lim > 0) {
+                          int p2 = (int) (rss * 100L / lim);
+                          sb.append("RAM сервера: ").append(col(p2)).append(rss / MB).append("§r / ")
+                                  .append(lim / MB).append(" МБ (").append(col(p2)).append(p2).append("%§r)\n");
+                      } else {
+                          sb.append("RAM сервера: ").append(rss / MB).append(" МБ\n");
+                      }
+                  }
+
+                  Double tps = number(getServer(), "getTicksPerSecond");
+                  if (tps != null) {
+                      String tc = tps >= 18 ? "§2" : (tps >= 15 ? "§6" : "§c");
+                      sb.append("TPS: ").append(tc).append(String.format(Locale.US, "%.1f", tps)).append("§r\n");
+                  }
+
+                  int items = 0;
+                  int mobs = 0;
+                  int other = 0;
+                  int chunks = 0;
+                  for (Level lv : levels()) {
+                      try {
+                          for (Entity e : entitiesOf(lv)) {
+                              if (e instanceof Player) {
+                                  continue;
+                              }
+                              int c = classify(e);
+                              if (c == 1) {
+                                  items++;
+                              } else if (c == 2 || c == 3) {
+                                  mobs++;
+                              } else {
+                                  other++;
+                              }
+                          }
+                          Object cm = lv.getChunks();
+                          if (cm instanceof Map) {
+                              chunks += ((Map<?, ?>) cm).size();
+                          }
+                      } catch (Throwable t) {
+                          dbg(t);
+                      }
+                  }
+                  sb.append("Сущности: §6").append(items + mobs + other).append("§r (предметы ").append(items)
+                          .append(", мобы ").append(mobs).append(", прочее ").append(other).append(")\n");
+                  sb.append("Загружено чанков: §6").append(chunks).append("§r\n");
+                  sb.append("Игроков онлайн: §6").append(getServer().getOnlinePlayers().size()).append("§r\n");
+                  sb.append("Лимит прорисовки: §6").append(viewEnabled ? (viewLimit + " чанков") : "выключен").append("§r\n");
+
+                  long[] h1 = stats.sum(3600000L);
+                  long[] h24 = stats.sum(86400000L);
+                  sb.append("\n§lУдалено плагином§r\n");
+                  sb.append("За последний час:\n");
+                  sb.append("  предметов §6").append(h1[0]).append("§r, мобов §6").append(h1[1])
+                          .append("§r, чанков §6").append(h1[2]).append("§r\n");
+                  sb.append("За 24 часа:\n");
+                  sb.append("  предметов §6").append(h24[0]).append("§r, мобов §6").append(h24[1])
+                          .append("§r, чанков §6").append(h24[2]).append("§r\n");
+
+                  sb.append("\nДо очистки предметов: ");
+                  if (itemsEnabled) {
+                      sb.append("§6").append(Math.max(0, itemCountdown)).append(" сек.§r");
+                  } else {
+                      sb.append("выключена");
+                  }
+                  return sb.toString();
+              }
+
+              // ================= ЛИМИТ ДАЛЬНОСТИ ПРОГРУЗКИ =================
+
+              private void applyViewLimit(Player p) {
+                  if (!viewEnabled || p == null) {
+                      return;
+                  }
+                  try {
+                      int cur = viewDist(p, -1);
+                      if (cur < 0 || cur > viewLimit) {
+                          p.getClass().getMethod("setViewDistance", int.class).invoke(p, viewLimit);
+                      }
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+              }
+
+              private void applyViewToAll() {
+                  if (!viewEnabled) {
+                      return;
+                  }
+                  for (Player p : new ArrayList<>(getServer().getOnlinePlayers().values())) {
+                      applyViewLimit(p);
+                  }
+              }
+
+              @EventHandler
+              public void onJoin(PlayerJoinEvent e) {
+                  try {
+                      if (!viewEnabled) {
+                          return;
+                      }
+                      final Player p = e.getPlayer();
+                      int[] delays = new int[]{20, 100, 300};
+                      for (int d : delays) {
+                          getServer().getScheduler().scheduleDelayedTask(this, new Task() {
+                              @Override
+                              public void onRun(int currentTick) {
+                                  if (p.isOnline()) {
+                                      applyViewLimit(p);
+                                  }
+                              }
+                          }, d);
+                      }
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+              }
+
+              // ================= МЕНЮ И КОМАНДЫ =================
+
+              private void openMenu(Player p) {
+                  try {
+                      FormWindowSimple form = new FormWindowSimple("§lОптимизация сервера", report());
+                      form.addButton(new ElementButton("§l§0Обновить"));
+                      form.addButton(new ElementButton("§l§0Закрыть"));
+                      openForms.put(p.getUniqueId(), form);
+                      p.showFormWindow(form);
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+              }
+
+              @EventHandler
+              public void onForm(PlayerFormRespondedEvent e) {
+                  try {
+                      Player p = e.getPlayer();
+                      if (p == null || e.getWindow() == null) {
+                          return;
+                      }
+                      FormWindow mine = openForms.get(p.getUniqueId());
+                      if (mine == null || mine != e.getWindow()) {
+                          return;
+                      }
+                      openForms.remove(p.getUniqueId());
+                      if (e.wasClosed() || !(e.getResponse() instanceof FormResponseSimple)) {
+                          return;
+                      }
+                      int id = ((FormResponseSimple) e.getResponse()).getClickedButtonId();
+                      if (id == 0 && p.hasPermission("optimizer.aop")) {
+                          final Player pl = p;
+                          getServer().getScheduler().scheduleDelayedTask(this, new Task() {
+                              @Override
+                              public void onRun(int currentTick) {
+                                  if (pl.isOnline()) {
+                                      openMenu(pl);
+                                  }
+                              }
+                          }, 2);
+                      }
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+              }
+
+              @EventHandler
+              public void onQuit(PlayerQuitEvent e) {
+                  try {
+                      openForms.remove(e.getPlayer().getUniqueId());
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+              }
+
+              @Override
+              public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+                  try {
+                      String name = command.getName().toLowerCase();
+                      if (name.equals("aop")) {
+                          if (!sender.hasPermission("optimizer.aop")) {
+                              return true;
+                          }
+                          if (args.length > 0 && args[0].equalsIgnoreCase("reload")) {
+                              reloadConfig();
+                              loadSettings();
+                              applyViewToAll();
+                              sender.sendMessage("§2Optimizer: настройки перезагружены.");
+                              return true;
+                          }
+                          if (sender instanceof Player) {
+                              openMenu((Player) sender);
+                          } else {
+                              sender.sendMessage(report());
+                          }
+                          return true;
+                      }
+                      if (name.equals("perf")) {
+                          if (!sender.hasPermission("optimizer.perf")) {
+                              return true;
+                          }
+                          sender.sendMessage(report());
+                          return true;
+                      }
+                  } catch (Throwable t) {
+                      dbg(t);
+                  }
+                  return true;
+              }
+          }
+          JAVAEOF
+
+      - name: Build with Maven
+        run: |
+          cd Optimizer
+          mvn -B clean package
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: Optimizer-jar
+          path: Optimizer/target/Optimizer.jar
